@@ -87,7 +87,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="card-title">Today's Spending</div>
-          <div className="card-value">${summary.total_today.toFixed(2)}</div>
+          <div className="card-value">₹{summary.total_today.toFixed(2)}</div>
         </div>
 
         <div className="stat-card" data-testid="stat-week">
@@ -97,10 +97,10 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="card-title">This Week</div>
-          <div className="card-value">${summary.total_week.toFixed(2)}</div>
+          <div className="card-value">₹{summary.total_week.toFixed(2)}</div>
           {summary.weekly_limit > 0 && (
             <div className="card-subtitle">
-              ${summary.remaining_week.toFixed(2)} remaining
+              ₹{summary.remaining_week.toFixed(2)} remaining
               {summary.weekly_warning === 'yellow' && (
                 <span className="warning-badge warning-yellow" style={{ marginLeft: '0.5rem' }}>
                   <AlertCircle size={14} /> 80% Used
@@ -122,10 +122,10 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="card-title">This Month</div>
-          <div className="card-value">${summary.total_month.toFixed(2)}</div>
+          <div className="card-value">₹{summary.total_month.toFixed(2)}</div>
           {summary.monthly_limit > 0 && (
             <div className="card-subtitle">
-              ${summary.remaining_month.toFixed(2)} remaining
+              ₹{summary.remaining_month.toFixed(2)} remaining
               {summary.monthly_warning === 'yellow' && (
                 <span className="warning-badge warning-yellow" style={{ marginLeft: '0.5rem' }}>
                   <AlertCircle size={14} /> 80% Used
@@ -150,11 +150,11 @@ export default function Dashboard() {
           <div className="card-value" style={{ fontSize: '1.5rem' }}>
             <div style={{ marginBottom: '0.5rem' }}>
               <TrendingDown size={20} style={{ color: '#10b981', display: 'inline', marginRight: '0.5rem' }} />
-              ${summary.money_gave.toFixed(2)} Lent
+              ₹{summary.money_gave.toFixed(2)} Lent
             </div>
             <div>
               <TrendingUp size={20} style={{ color: '#ef4444', display: 'inline', marginRight: '0.5rem' }} />
-              ${summary.money_owe.toFixed(2)} Owe
+              ₹{summary.money_owe.toFixed(2)} Owe
             </div>
           </div>
         </div>

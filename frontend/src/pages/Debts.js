@@ -5,6 +5,7 @@ import { Plus, Check, X, Trash2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -83,6 +84,10 @@ export default function Debts() {
   };
 
   const deleteDebt = async (debtId) => {
+    if (!window.confirm('Are you sure you want to delete this debt entry?')) {
+      return;
+    }
+    
     try {
       await axios.delete(`${API}/debts/${debtId}`);
       toast.success('Debt entry deleted');
@@ -117,6 +122,7 @@ export default function Debts() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Add Debt Entry</DialogTitle>
+              <DialogDescription>Add a new money lent or borrowed entry</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit}>
               <div className="form-group">
@@ -145,7 +151,7 @@ export default function Debts() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Amount *</label>
+                <label className="form-label">Amount (₹) *</label>
                 <input
                   type="number"
                   step="0.01"
@@ -212,7 +218,7 @@ export default function Debts() {
                 {moneyGave.map((debt) => (
                   <tr key={debt.id} data-testid={`debt-gave-${debt.id}`}>
                     <td>{debt.name}</td>
-                    <td style={{ fontWeight: 600, color: '#10b981' }}>${debt.amount.toFixed(2)}</td>
+                    <td style={{ fontWeight: 600, color: '#10b981' }}>₹{debt.amount.toFixed(2)}</td>
                     <td>{debt.reason}</td>
                     <td>{new Date(debt.date).toLocaleDateString()}</td>
                     <td>
@@ -281,7 +287,7 @@ export default function Debts() {
                 {moneyOwe.map((debt) => (
                   <tr key={debt.id} data-testid={`debt-owe-${debt.id}`}>
                     <td>{debt.name}</td>
-                    <td style={{ fontWeight: 600, color: '#ef4444' }}>${debt.amount.toFixed(2)}</td>
+                    <td style={{ fontWeight: 600, color: '#ef4444' }}>₹{debt.amount.toFixed(2)}</td>
                     <td>{debt.reason}</td>
                     <td>{new Date(debt.date).toLocaleDateString()}</td>
                     <td>

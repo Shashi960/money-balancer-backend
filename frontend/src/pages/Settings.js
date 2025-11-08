@@ -71,13 +71,13 @@ export default function Settings() {
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label className="form-label" htmlFor="weekly_limit">Weekly Limit</label>
+            <label className="form-label" htmlFor="weekly_limit">Weekly Limit (₹)</label>
             <input
               id="weekly_limit"
               type="number"
               step="0.01"
               className="form-input"
-              placeholder="Enter weekly limit (e.g., 500)"
+              placeholder="Enter weekly limit (e.g., 5000)"
               value={formData.weekly_limit}
               onChange={(e) => setFormData({ ...formData, weekly_limit: e.target.value })}
               data-testid="weekly-limit-input"
@@ -85,13 +85,13 @@ export default function Settings() {
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="monthly_limit">Monthly Limit</label>
+            <label className="form-label" htmlFor="monthly_limit">Monthly Limit (₹)</label>
             <input
               id="monthly_limit"
               type="number"
               step="0.01"
               className="form-input"
-              placeholder="Enter monthly limit (e.g., 2000)"
+              placeholder="Enter monthly limit (e.g., 20000)"
               value={formData.monthly_limit}
               onChange={(e) => setFormData({ ...formData, monthly_limit: e.target.value })}
               data-testid="monthly-limit-input"

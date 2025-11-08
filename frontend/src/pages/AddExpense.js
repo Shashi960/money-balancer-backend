@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, DollarSign } from "lucide-react";
+import { Plus, DollarSign, Edit } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -11,12 +11,26 @@ const categories = ['Food', 'Travel', 'Shopping', 'Bills', 'Entertainment', 'Hea
 
 export default function AddExpense() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const editExpense = location.state?.expense;
+  
   const [formData, setFormData] = useState({
     title: '',
     amount: '',
     date: new Date().toISOString().split('T')[0],
     category: 'Food'
   });
+
+  useEffect(() => {
+    if (editExpense) {
+      setFormData({
+        title: editExpense.title,
+        amount: editExpense.amount,
+        date: editExpense.date,
+        category: editExpense.category
+      });
+    }
+  }, [editExpense]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -27,22 +41,32 @@ export default function AddExpense() {
     }
 
     try {
-      await axios.post(`${API}/expenses`, {
-        ...formData,
-        amount: parseFloat(formData.amount)
-      });
-      toast.success('Expense added successfully!');
+      if (editExpense) {
+        // Update existing expense
+        await axios.patch(`${API}/expenses/${editExpense.id}`, {
+          ...formData,
+          amount: parseFloat(formData.amount)
+        });
+        toast.success('Expense updated successfully!');
+      } else {
+        // Create new expense
+        await axios.post(`${API}/expenses`, {
+          ...formData,
+          amount: parseFloat(formData.amount)
+        });
+        toast.success('Expense added successfully!');
+      }
       navigate('/');
     } catch (error) {
-      console.error('Error adding expense:', error);
-      toast.error('Failed to add expense');
+      console.error('Error saving expense:', error);
+      toast.error('Failed to save expense');
     }
   };
 
   return (
     <div className="page-container" data-testid="add-expense-page">
       <div className="page-header">
-        <h1 className="page-title">Add Expense</h1>
+        <h1 className="page-title">{editExpense ? 'Edit Expense' : 'Add Expense'}</h1>
         <p className="page-subtitle">Track your daily spending</p>
       </div>
 
@@ -62,9 +86,9 @@ export default function AddExpense() {
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="amount">Amount *</label>
+            <label className="form-label" htmlFor="amount">Amount (₹) *</label>
             <div style={{ position: 'relative' }}>
-              <DollarSign size={20} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: '#718096' }} />
+              <span style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: '#718096', fontSize: '1.25rem' }}>₹</span>
               <input
                 id="amount"
                 type="number"
@@ -108,8 +132,7 @@ export default function AddExpense() {
 
           <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
             <button type="submit" className="btn btn-primary" data-testid="submit-expense-btn" style={{ flex: 1 }}>
-              <Plus size={20} />
-              Add Expense
+              {editExpense ? <><Edit size={20} /> Update Expense</> : <><Plus size={20} /> Add Expense</>}
             </button>
             <button
               type="button"
