@@ -1,52 +1,64 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
+import Dashboard from "@/pages/Dashboard";
+import AddExpense from "@/pages/AddExpense";
+import Debts from "@/pages/Debts";
+import Settings from "@/pages/Settings";
+import { Toaster } from "@/components/ui/sonner";
+import { Wallet, Plus, HandCoins, Settings as SettingsIcon } from "lucide-react";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+function Navigation() {
+  const location = useLocation();
+  
+  const navItems = [
+    { path: "/", icon: Wallet, label: "Dashboard" },
+    { path: "/add-expense", icon: Plus, label: "Add Expense" },
+    { path: "/debts", icon: HandCoins, label: "Debts" },
+    { path: "/settings", icon: SettingsIcon, label: "Settings" },
+  ];
+  
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
+    <nav className="sidebar">
+      <div className="sidebar-header">
+        <Wallet className="sidebar-logo" size={32} />
+        <h1 className="sidebar-title">Money Balancer</h1>
+      </div>
+      <div className="nav-links">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = location.pathname === item.path;
+          return (
+            <Link
+              key={item.path}
+              to={item.path}
+              className={`nav-link ${isActive ? 'active' : ''}`}
+              data-testid={`nav-${item.label.toLowerCase().replace(' ', '-')}`}
+            >
+              <Icon size={20} />
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
   );
-};
+}
 
 function App() {
   return (
     <div className="App">
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
+        <Navigation />
+        <main className="main-content">
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/add-expense" element={<AddExpense />} />
+            <Route path="/debts" element={<Debts />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </main>
       </BrowserRouter>
+      <Toaster />
     </div>
   );
 }
