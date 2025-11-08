@@ -134,6 +134,28 @@ async def get_expenses(filter: Optional[str] = None):
     
     return expenses
 
+@api_router.patch("/expenses/{expense_id}", response_model=Expense)
+async def update_expense(expense_id: str, input: ExpenseCreate):
+    expense_dict = input.model_dump()
+    
+    result = await db.expenses.find_one_and_update(
+        {"id": expense_id},
+        {"$set": expense_dict},
+        return_document=True
+    )
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    
+    # Remove _id for response
+    result.pop('_id', None)
+    
+    # Convert timestamp
+    if isinstance(result['timestamp'], str):
+        result['timestamp'] = datetime.fromisoformat(result['timestamp'])
+    
+    return Expense(**result)
+
 @api_router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str):
     result = await db.expenses.delete_one({"id": expense_id})
