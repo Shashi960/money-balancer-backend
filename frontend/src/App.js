@@ -55,6 +55,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/add-expense" element={<AddExpense />} />
+            <Route path="/expenses" element={<Expenses />} />
             <Route path="/debts" element={<Debts />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
