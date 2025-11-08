@@ -2,10 +2,11 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
 import Dashboard from "@/pages/Dashboard";
 import AddExpense from "@/pages/AddExpense";
+import Expenses from "@/pages/Expenses";
 import Debts from "@/pages/Debts";
 import Settings from "@/pages/Settings";
 import { Toaster } from "@/components/ui/sonner";
-import { Wallet, Plus, HandCoins, Settings as SettingsIcon } from "lucide-react";
+import { Wallet, Plus, Receipt, HandCoins, Settings as SettingsIcon } from "lucide-react";
 
 function Navigation() {
   const location = useLocation();
@@ -13,6 +14,7 @@ function Navigation() {
   const navItems = [
     { path: "/", icon: Wallet, label: "Dashboard" },
     { path: "/add-expense", icon: Plus, label: "Add Expense" },
+    { path: "/expenses", icon: Receipt, label: "Expenses" },
     { path: "/debts", icon: HandCoins, label: "Debts" },
     { path: "/settings", icon: SettingsIcon, label: "Settings" },
   ];
