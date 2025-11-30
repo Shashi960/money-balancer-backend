@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
+# load_dotenv(ROOT_DIR / ".env")   # disable for Render
 
 # Configuration from .env (safe defaults)
 MONGO_URL = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
