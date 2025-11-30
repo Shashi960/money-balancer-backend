@@ -113,7 +113,7 @@ class Summary(BaseModel):
 async def startup_db_client():
     global client, db
     logger.info("Connecting to MongoDB...")
-    client = AsyncIOMotorClient(MONGO_URL)
+    client = AsyncIOMotorClient(MONGO_URI)
     db = client[DB_NAME]
     # Optionally create indexes here (example)
     try:
