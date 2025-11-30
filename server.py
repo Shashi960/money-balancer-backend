@@ -16,7 +16,7 @@ ROOT_DIR = Path(__file__).parent
 # load_dotenv(ROOT_DIR / ".env")   # disable for Render
 
 # Configuration from .env (safe defaults)
-MONGO_URL = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://shashikodiya_db_user:Shashi68MoneyBalancer68.@cluster0.whu5u2j.mongodb.net/moneybalancer?retryWrites=true&w=majority&tls=true")
 DB_NAME = os.getenv("DB_NAME", "money_balancer")
 CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "*")
 
