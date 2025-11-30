@@ -122,7 +122,7 @@ async def startup_db_client():
         await db.limits.create_index("id", unique=True)
     except Exception as e:
         logger.info("Index creation skipped or failed: %s", e)
-    logger.info("Connected to MongoDB: %s (db=%s)", MONGO_URL.split("@")[-1], DB_NAME)
+    logger.info("Connected to MongoDB: %s (db=%s)", MONGO_URI.split("@")[-1], DB_NAME)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
