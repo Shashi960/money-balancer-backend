@@ -13,10 +13,10 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
+# load_dotenv(ROOT_DIR / ".env")   # disable for Render
 
 # Configuration from .env (safe defaults)
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://127.0.0.1:27017")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
 DB_NAME = os.getenv("DB_NAME", "money_balancer")
 CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "*")
 
@@ -113,7 +113,7 @@ class Summary(BaseModel):
 async def startup_db_client():
     global client, db
     logger.info("Connecting to MongoDB...")
-    client = AsyncIOMotorClient(MONGO_URL)
+    client = AsyncIOMotorClient(MONGO_URI)
     db = client[DB_NAME]
     # Optionally create indexes here (example)
     try:
@@ -122,7 +122,7 @@ async def startup_db_client():
         await db.limits.create_index("id", unique=True)
     except Exception as e:
         logger.info("Index creation skipped or failed: %s", e)
-    logger.info("Connected to MongoDB: %s (db=%s)", MONGO_URL.split("@")[-1], DB_NAME)
+    logger.info("Connected to MongoDB: %s (db=%s)", MONGO_URI.split("@")[-1], DB_NAME)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -147,8 +147,17 @@ async def create_expense(input: ExpenseCreate):
     return expense_obj
 
 @api_router.get("/expenses", response_model=List[Expense])
-async def get_expenses(filter: Optional[str] = None):
+async def get_expenses(
+    filter: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None
+):
+
     query = {}
+    # Date range filter (highest priority)
+    if from_date and to_date:
+        query["date"] = {"$gte": from_date, "$lte": to_date}
+
 
     if filter:
         now = datetime.now(timezone.utc)
