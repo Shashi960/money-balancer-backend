@@ -126,6 +126,7 @@ export default function Expenses() {
 <button
   className="btn btn-primary"
   onClick={fetchExpenses}
+  disabled={!fromDate || !toDate}
 >
   Apply
 </button>
