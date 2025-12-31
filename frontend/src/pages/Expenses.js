@@ -19,22 +19,36 @@ export default function Expenses() {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [useDateRange, setUseDateRange] = useState(false);
+
 
   useEffect(() => {
     fetchExpenses();
   }, [filter]);
 
   const fetchExpenses = async () => {
-    try {
-      const response = await axios.get(`${API}/expenses?filter=${filter}`);
-      setExpenses(response.data);
-    } catch (error) {
-      console.error('Error fetching expenses:', error);
-      toast.error('Failed to fetch expenses');
-    } finally {
-      setLoading(false);
+  setLoading(true);
+  try {
+    let url = `${API}/expenses`;
+
+    if (useDateRange && fromDate && toDate) {
+      url += `?from_date=${fromDate}&to_date=${toDate}`;
+    } else {
+      url += `?filter=${filter}`;
     }
-  };
+
+    const response = await axios.get(url);
+    setExpenses(response.data);
+  } catch (error) {
+    console.error("Error fetching expenses:", error);
+    toast.error("Failed to fetch expenses");
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   const deleteExpense = async (expenseId) => {
     if (!window.confirm('Are you sure you want to delete this expense?')) {
@@ -70,7 +84,16 @@ export default function Expenses() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <Filter size={20} style={{ color: '#718096' }} />
-          <Select value={filter} onValueChange={setFilter}>
+          <Select
+              value={filter}
+              onValueChange={(value) => {
+                setFilter(value);
+                setUseDateRange(false);
+                setFromDate("");
+                setToDate("");
+              }}
+            >
+
             <SelectTrigger className="w-[180px]" data-testid="filter-select">
               <SelectValue placeholder="Filter by" />
             </SelectTrigger>
@@ -80,6 +103,33 @@ export default function Expenses() {
               <SelectItem value="month">This Month</SelectItem>
             </SelectContent>
           </Select>
+          <input
+  type="date"
+  value={fromDate}
+  onChange={(e) => {
+    setFromDate(e.target.value);
+    setUseDateRange(true);
+  }}
+  className="input"
+/>
+
+<input
+  type="date"
+  value={toDate}
+  onChange={(e) => {
+    setToDate(e.target.value);
+    setUseDateRange(true);
+  }}
+  className="input"
+/>
+
+<button
+  className="btn btn-primary"
+  onClick={fetchExpenses}
+>
+  Apply
+</button>
+
         </div>
       </div>
 
