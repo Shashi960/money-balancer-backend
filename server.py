@@ -105,6 +105,26 @@ async def delete_expense(expense_id: str):
         raise HTTPException(404, "Not found")
     return {"message": "Deleted"}
 
+@router.post("/fix-expense-timestamps")
+async def fix_expense_timestamps():
+    expenses = await db.expenses.find({}).to_list(10000)
+
+    for e in expenses:
+        try:
+            correct_ts = datetime.strptime(
+                e["date"], "%Y-%m-%d"
+            ).replace(tzinfo=timezone.utc)
+
+            await db.expenses.update_one(
+                {"id": e["id"]},
+                {"$set": {"timestamp": correct_ts}}
+            )
+        except Exception as ex:
+            print("Skip:", e.get("id"), ex)
+
+    return {"status": "timestamps fixed"}
+
+
 # ---------------- MIDDLEWARE ----------------
 app.add_middleware(
     CORSMiddleware,
