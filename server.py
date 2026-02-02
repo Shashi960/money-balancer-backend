@@ -110,20 +110,24 @@ async def delete_expense(expense_id: str):
 async def fix_expense_timestamps():
     expenses = await db.expenses.find({}).to_list(10000)
 
+    updated = 0
     for e in expenses:
-        try:
-            correct_ts = datetime.strptime(
-                e["date"], "%Y-%m-%d"
-            ).replace(tzinfo=timezone.utc)
+        date_str = e.get("date")
+        if not date_str:
+            continue
 
-            await db.expenses.update_one(
-                {"id": e["id"]},
-                {"$set": {"timestamp": correct_ts}}
-            )
-        except Exception as ex:
-            print("Skip:", e.get("id"), ex)
+        correct_ts = datetime.strptime(date_str, "%Y-%m-%d").replace(
+            hour=12, tzinfo=timezone.utc
+        )
 
-    return {"status": "timestamps fixed"}
+        await db.expenses.update_one(
+            {"id": e["id"]},
+            {"$set": {"timestamp": correct_ts}}
+        )
+        updated += 1
+
+    return {"status": "timestamps fixed", "updated": updated}
+
 
 
 
