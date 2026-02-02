@@ -63,29 +63,40 @@ async def get_expenses(
 ):
     query = {}
 
-    # ✅ Date range has TOP priority
+    # ✅ DATE RANGE (HIGHEST PRIORITY)
     if from_date and to_date:
-        query["date"] = {"$gte": from_date, "$lte": to_date}
+        from_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        to_dt = datetime.strptime(to_date, "%Y-%m-%d").replace(
+            hour=23, minute=59, second=59, tzinfo=timezone.utc
+        )
 
-    # ✅ Quick filters
+        query["timestamp"] = {
+            "$gte": from_dt,
+            "$lte": to_dt
+        }
+
+    # ✅ QUICK FILTERS
     elif filter:
         now = datetime.now(timezone.utc)
 
         if filter == "day":
-            today = now.strftime("%Y-%m-%d")
-            query["date"] = {"$gte": today, "$lte": today}
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+            query["timestamp"] = {"$gte": start, "$lt": end}
 
         elif filter == "week":
-            start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-            query["date"] = {"$gte": start}
+            start = now - timedelta(days=now.weekday())
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            query["timestamp"] = {"$gte": start}
 
         elif filter == "month":
-            start = now.replace(day=1).strftime("%Y-%m-%d")
-            query["date"] = {"$gte": start}
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            query["timestamp"] = {"$gte": start}
 
     docs = await db.expenses.find(query, {"_id": 0}).to_list(10000)
-    docs.sort(key=lambda x: x["date"], reverse=True)
+    docs.sort(key=lambda x: x["timestamp"], reverse=True)
     return docs
+
 
 @router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str):
