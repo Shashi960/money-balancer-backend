@@ -1,18 +1,16 @@
 from fastapi import FastAPI, APIRouter, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ReturnDocument
-import os
-import logging
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
+import os
+import logging
 
 # ---------------- CONFIG ----------------
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME", "money_balancer")
-CORS_ORIGINS = ["*"]
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +26,7 @@ class Expense(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     amount: float
-    date: str
+    date: str  # YYYY-MM-DD
     category: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -44,7 +42,7 @@ async def startup():
     global client, db
     client = AsyncIOMotorClient(MONGO_URI)
     db = client[DB_NAME]
-    logger.info("Connected to MongoDB")
+    logger.info("MongoDB connected")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -65,19 +63,22 @@ async def get_expenses(
 ):
     query = {}
 
-    # 🔹 DATE RANGE (priority)
+    # ✅ Date range has TOP priority
     if from_date and to_date:
         query["date"] = {"$gte": from_date, "$lte": to_date}
 
-    # 🔹 QUICK FILTERS
+    # ✅ Quick filters
     elif filter:
         now = datetime.now(timezone.utc)
+
         if filter == "day":
             today = now.strftime("%Y-%m-%d")
-            query["date"] = today
+            query["date"] = {"$gte": today, "$lte": today}
+
         elif filter == "week":
             start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
             query["date"] = {"$gte": start}
+
         elif filter == "month":
             start = now.replace(day=1).strftime("%Y-%m-%d")
             query["date"] = {"$gte": start}
@@ -96,7 +97,7 @@ async def delete_expense(expense_id: str):
 # ---------------- MIDDLEWARE ----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
