@@ -1,3 +1,4 @@
+import React, { useState } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
 import Dashboard from "@/pages/Dashboard";
@@ -5,6 +6,7 @@ import AddExpense from "@/pages/AddExpense";
 import Expenses from "@/pages/Expenses";
 import Debts from "@/pages/Debts";
 import Settings from "@/pages/Settings";
+import Login from "@/pages/Login";
 import { Toaster } from "@/components/ui/sonner";
 import { Wallet, Plus, Receipt, HandCoins, Settings as SettingsIcon } from "lucide-react";
 
@@ -47,6 +49,12 @@ function Navigation() {
 }
 
 function App() {
+  const [token, setToken] = useState(localStorage.getItem('token'));
+
+  if (!token) {
+    return <Login onLogin={setToken} />;
+  }
+
   return (
     <div className="App">
       <BrowserRouter>
