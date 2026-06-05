@@ -5,7 +5,7 @@ from typing import Optional
 
 
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
@@ -55,12 +55,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt, int((expire - datetime.utcnow()).total_seconds())
 
 # Dependency to get DB (you can import your db object instead)
-async def get_db(request=None):
-    # If your server creates `db = client[DB_NAME]` at startup, import it instead (example below).
-    # Here we expect the app to attach db to app.state.db in startup.
-    if request:
-        return request.app.state.db
-    raise RuntimeError("DB not found")
+async def get_db(request: Request):
+    db = getattr(request.app.state, "db", None)
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection not initialized")
+    return db
 
 # register endpoint
 @router.post("/register", response_model=UserOut)

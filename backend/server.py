@@ -12,6 +12,11 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 
+try:
+    from backend.auth import get_current_user, router as auth_router
+except ImportError:
+    from auth import get_current_user, router as auth_router
+
 ROOT_DIR = Path(__file__).parent
 # load_dotenv(ROOT_DIR / ".env")   # disable for Render
 
@@ -53,6 +58,7 @@ class Expense(BaseModel):
     date: str  # store as "YYYY-MM-DD" string (UI selected date)
     category: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    user_email: Optional[str] = None
 
 class ExpenseCreate(BaseModel):
     title: str
@@ -71,6 +77,7 @@ class Debt(BaseModel):
     status: str  # "pending" or "paid"
     debt_type: str  # "gave" or "owe"
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    user_email: Optional[str] = None
 
 class DebtCreate(BaseModel):
     name: str
@@ -115,6 +122,7 @@ async def startup_db_client():
     logger.info("Connecting to MongoDB...")
     client = AsyncIOMotorClient(MONGO_URI)
     db = client[DB_NAME]
+    app.state.db = db  # Store db in app state for dependencies
     # Optionally create indexes here (example)
     try:
         await db.expenses.create_index("id", unique=True)
@@ -122,6 +130,27 @@ async def startup_db_client():
         await db.limits.create_index("id", unique=True)
     except Exception as e:
         logger.info("Index creation skipped or failed: %s", e)
+    
+    # Create default user if not exists
+    try:
+        try:
+            from backend.auth import get_password_hash
+        except ImportError:
+            from auth import get_password_hash
+        
+        users_col = db.users
+        existing = await users_col.find_one({"email": "shashi789"})
+        if not existing:
+            hashed = get_password_hash("8050563255")
+            await users_col.insert_one({
+                "email": "shashi789",
+                "password": hashed,
+                "full_name": "Shashi"
+            })
+            logger.info("Created default user shashi789")
+    except Exception as user_e:
+        logger.error("Failed to create default user on startup: %s", user_e)
+        
     logger.info("Connected to MongoDB: %s (db=%s)", MONGO_URI.split("@")[-1], DB_NAME)
 
 @app.on_event("shutdown")
@@ -134,9 +163,9 @@ async def shutdown_db_client():
 
 # ---------- Expense Routes ----------
 @api_router.post("/expenses", response_model=Expense)
-async def create_expense(input: ExpenseCreate):
+async def create_expense(input: ExpenseCreate, current_user: dict = Depends(get_current_user)):
     expense_dict = input.model_dump()
-    expense_obj = Expense(**expense_dict)
+    expense_obj = Expense(**expense_dict, user_email=current_user["email"])
 
     # store timestamp as datetime (UTC)
     doc = expense_obj.model_dump()
@@ -150,16 +179,20 @@ async def create_expense(input: ExpenseCreate):
 async def get_expenses(
     filter: Optional[str] = None,
     from_date: Optional[str] = None,
-    to_date: Optional[str] = None
+    to_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
 ):
-
-    query = {}
+    query = {
+        "$or": [
+            {"user_email": current_user["email"]},
+            {"user_email": {"$exists": False}}
+        ]
+    }
     # Date range filter (highest priority)
     if from_date and to_date:
         query["date"] = {"$gte": from_date, "$lte": to_date}
 
-
-    if filter:
+    elif filter:
         now = datetime.now(timezone.utc)
         if filter == "day":
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -186,8 +219,17 @@ async def get_expenses(
     return docs
 
 @api_router.patch("/expenses/{expense_id}", response_model=Expense)
-async def update_expense(expense_id: str, input: ExpenseCreate):
+async def update_expense(expense_id: str, input: ExpenseCreate, current_user: dict = Depends(get_current_user)):
+    expense = await db.expenses.find_one({"id": expense_id})
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    
+    if expense.get("user_email") and expense.get("user_email") != current_user["email"]:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this expense")
+
     expense_dict = input.model_dump()
+    expense_dict["user_email"] = current_user["email"]
+    
     # Use pymongo ReturnDocument to get the updated document after update
     result = await db.expenses.find_one_and_update(
         {"id": expense_id},
@@ -204,7 +246,14 @@ async def update_expense(expense_id: str, input: ExpenseCreate):
     return result
 
 @api_router.delete("/expenses/{expense_id}")
-async def delete_expense(expense_id: str):
+async def delete_expense(expense_id: str, current_user: dict = Depends(get_current_user)):
+    expense = await db.expenses.find_one({"id": expense_id})
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    
+    if expense.get("user_email") and expense.get("user_email") != current_user["email"]:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this expense")
+
     result = await db.expenses.delete_one({"id": expense_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Expense not found")
@@ -213,9 +262,9 @@ async def delete_expense(expense_id: str):
 
 # ---------- Debt Routes ----------
 @api_router.post("/debts", response_model=Debt)
-async def create_debt(input: DebtCreate):
+async def create_debt(input: DebtCreate, current_user: dict = Depends(get_current_user)):
     debt_dict = input.model_dump()
-    debt_obj = Debt(**debt_dict)
+    debt_obj = Debt(**debt_dict, user_email=current_user["email"])
     doc = debt_obj.model_dump()
     if isinstance(doc.get("timestamp"), str):
         doc["timestamp"] = datetime.fromisoformat(doc["timestamp"])
@@ -223,8 +272,14 @@ async def create_debt(input: DebtCreate):
     return debt_obj
 
 @api_router.get("/debts", response_model=List[Debt])
-async def get_debts():
-    docs = await db.debts.find({}, {"_id": 0}).to_list(length=10000)
+async def get_debts(current_user: dict = Depends(get_current_user)):
+    query = {
+        "$or": [
+            {"user_email": current_user["email"]},
+            {"user_email": {"$exists": False}}
+        ]
+    }
+    docs = await db.debts.find(query, {"_id": 0}).to_list(length=10000)
     for d in docs:
         if isinstance(d.get("timestamp"), str):
             d["timestamp"] = datetime.fromisoformat(d["timestamp"])
@@ -232,7 +287,14 @@ async def get_debts():
     return docs
 
 @api_router.patch("/debts/{debt_id}", response_model=Debt)
-async def update_debt(debt_id: str, input: DebtUpdate):
+async def update_debt(debt_id: str, input: DebtUpdate, current_user: dict = Depends(get_current_user)):
+    debt = await db.debts.find_one({"id": debt_id})
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    
+    if debt.get("user_email") and debt.get("user_email") != current_user["email"]:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this debt")
+
     result = await db.debts.find_one_and_update(
         {"id": debt_id},
         {"$set": {"status": input.status}},
@@ -246,7 +308,14 @@ async def update_debt(debt_id: str, input: DebtUpdate):
     return result
 
 @api_router.delete("/debts/{debt_id}")
-async def delete_debt(debt_id: str):
+async def delete_debt(debt_id: str, current_user: dict = Depends(get_current_user)):
+    debt = await db.debts.find_one({"id": debt_id})
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    
+    if debt.get("user_email") and debt.get("user_email") != current_user["email"]:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this debt")
+
     result = await db.debts.delete_one({"id": debt_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Debt not found")
@@ -255,23 +324,29 @@ async def delete_debt(debt_id: str):
 
 # ---------- Limit Routes ----------
 @api_router.post("/limit", response_model=Limit)
-async def create_or_update_limit(input: LimitCreate):
-    limit_obj = Limit(id="limit_settings", **input.model_dump())
+async def create_or_update_limit(input: LimitCreate, current_user: dict = Depends(get_current_user)):
+    limit_id = f"limit_{current_user['email']}"
+    limit_obj = Limit(id=limit_id, **input.model_dump())
     doc = limit_obj.model_dump()
-    await db.limits.update_one({"id": "limit_settings"}, {"$set": doc}, upsert=True)
+    await db.limits.update_one({"id": limit_id}, {"$set": doc}, upsert=True)
     return limit_obj
 
 @api_router.get("/limit", response_model=Optional[Limit])
-async def get_limit():
-    limit = await db.limits.find_one({"id": "limit_settings"}, {"_id": 0})
+async def get_limit(current_user: dict = Depends(get_current_user)):
+    limit_id = f"limit_{current_user['email']}"
+    limit = await db.limits.find_one({"id": limit_id}, {"_id": 0})
     if not limit:
-        return Limit(id="limit_settings", weekly_limit=0, monthly_limit=0)
+        # Check fallback legacy limit
+        legacy_limit = await db.limits.find_one({"id": "limit_settings"}, {"_id": 0})
+        if legacy_limit:
+            return Limit(id=limit_id, weekly_limit=legacy_limit.get("weekly_limit", 0), monthly_limit=legacy_limit.get("monthly_limit", 0))
+        return Limit(id=limit_id, weekly_limit=0, monthly_limit=0)
     return limit
 
 
 # ---------- Summary Route ----------
 @api_router.get("/summary", response_model=Summary)
-async def get_summary():
+async def get_summary(current_user: dict = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
 
     today_date = now.strftime("%Y-%m-%d")
@@ -280,13 +355,24 @@ async def get_summary():
     month_start = now.replace(day=1)
     month_start_date = month_start.strftime("%Y-%m-%d")
 
-    all_expenses = await db.expenses.find({}, {"_id": 0}).to_list(length=10000)
+    expense_query = {
+        "$or": [
+            {"user_email": current_user["email"]},
+            {"user_email": {"$exists": False}}
+        ]
+    }
+    all_expenses = await db.expenses.find(expense_query, {"_id": 0}).to_list(length=10000)
 
     total_today = sum(e["amount"] for e in all_expenses if e.get("date") == today_date)
     total_week = sum(e["amount"] for e in all_expenses if e.get("date", "") >= week_start_date)
     total_month = sum(e["amount"] for e in all_expenses if e.get("date", "") >= month_start_date)
 
-    limit = await db.limits.find_one({"id": "limit_settings"}, {"_id": 0})
+    limit_id = f"limit_{current_user['email']}"
+    limit = await db.limits.find_one({"id": limit_id}, {"_id": 0})
+    if not limit:
+        # Fallback to legacy limit settings
+        limit = await db.limits.find_one({"id": "limit_settings"}, {"_id": 0})
+
     if not limit:
         weekly_limit = 0
         monthly_limit = 0
@@ -313,7 +399,13 @@ async def get_summary():
         elif monthly_percent >= 80:
             monthly_warning = "yellow"
 
-    all_debts = await db.debts.find({}, {"_id": 0}).to_list(length=10000)
+    debt_query = {
+        "$or": [
+            {"user_email": current_user["email"]},
+            {"user_email": {"$exists": False}}
+        ]
+    }
+    all_debts = await db.debts.find(debt_query, {"_id": 0}).to_list(length=10000)
     money_gave = sum(d["amount"] for d in all_debts if d.get("debt_type") == "gave" and d.get("status") == "pending")
     money_owe = sum(d["amount"] for d in all_debts if d.get("debt_type") == "owe" and d.get("status") == "pending")
 
@@ -334,6 +426,7 @@ async def get_summary():
 
 # include router and middleware
 app.include_router(api_router)
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
