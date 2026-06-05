@@ -148,6 +148,16 @@ async def startup_db_client():
                 "full_name": "Shashi"
             })
             logger.info("Created default user shashi789")
+
+        existing_shashi68 = await users_col.find_one({"email": "Shashi68"})
+        if not existing_shashi68:
+            hashed_68 = get_password_hash("Shashi474232")
+            await users_col.insert_one({
+                "email": "Shashi68",
+                "password": hashed_68,
+                "full_name": "Shashi"
+            })
+            logger.info("Created default user Shashi68")
     except Exception as user_e:
         logger.error("Failed to create default user on startup: %s", user_e)
         

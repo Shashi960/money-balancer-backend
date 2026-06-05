@@ -100,8 +100,26 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncIOMotor
     except JWTError:
         raise credentials_exception
 
-    user_doc = await db.users.find_one({"email": email}, {"password": 0})
+    user_doc = await db.users.find_one({"email": email})
     if user_doc is None:
         raise credentials_exception
     # return simple dict or Pydantic model
     return user_doc
+
+# change password request model
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+@router.post("/change-password")
+async def change_password(req_data: ChangePasswordRequest, current_user: dict = Depends(get_current_user), db: AsyncIOMotorDatabase = Depends(get_db)):
+    user_with_pw = await db.users.find_one({"email": current_user["email"]})
+    if not user_with_pw or not verify_password(req_data.old_password, user_with_pw.get("password")):
+        raise HTTPException(status_code=400, detail="Incorrect old password")
+    new_hashed = get_password_hash(req_data.new_password)
+    await db.users.update_one(
+        {"email": current_user["email"]},
+        {"$set": {"password": new_hashed}}
+    )
+    return {"message": "Password updated successfully"}
+
