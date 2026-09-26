@@ -8,7 +8,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -19,6 +19,9 @@ except ImportError:
 
 ROOT_DIR = Path(__file__).parent
 # load_dotenv(ROOT_DIR / ".env")   # disable for Render
+
+# Indian Standard Time (UTC+5:30) for accurate daily/weekly/monthly boundaries
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # Configuration from .env (safe defaults)
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
@@ -57,6 +60,8 @@ class Expense(BaseModel):
     amount: float
     date: str  # store as "YYYY-MM-DD" string (UI selected date)
     category: str
+    payment_mode: Optional[str] = "UPI"
+    notes: Optional[str] = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     user_email: Optional[str] = None
 
@@ -65,6 +70,8 @@ class ExpenseCreate(BaseModel):
     amount: float
     date: str
     category: str
+    payment_mode: Optional[str] = "UPI"
+    notes: Optional[str] = ""
 
 class Debt(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -88,7 +95,12 @@ class DebtCreate(BaseModel):
     debt_type: str
 
 class DebtUpdate(BaseModel):
-    status: str
+    status: Optional[str] = None
+    name: Optional[str] = None
+    amount: Optional[float] = None
+    reason: Optional[str] = None
+    date: Optional[str] = None
+    debt_type: Optional[str] = None
 
 class Limit(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -96,10 +108,14 @@ class Limit(BaseModel):
     id: str = "limit_settings"
     weekly_limit: float
     monthly_limit: float
+    reminder_enabled: Optional[bool] = True
+    reminder_time: Optional[str] = "21:00"
 
 class LimitCreate(BaseModel):
     weekly_limit: float
     monthly_limit: float
+    reminder_enabled: Optional[bool] = True
+    reminder_time: Optional[str] = "21:00"
 
 class Summary(BaseModel):
     total_today: float
@@ -114,6 +130,13 @@ class Summary(BaseModel):
     weekly_warning: str  # "none", "yellow", "red"
     monthly_warning: str  # "none", "yellow", "red"
 
+class MonthlyBreakdownItem(BaseModel):
+    month: str  # "YYYY-MM"
+    total: float
+    count: int
+    top_category: str
+    categories: Dict[str, float]
+
 
 # ---------- Startup / Shutdown ----------
 @app.on_event("startup")
@@ -123,7 +146,6 @@ async def startup_db_client():
     client = AsyncIOMotorClient(MONGO_URI)
     db = client[DB_NAME]
     app.state.db = db  # Store db in app state for dependencies
-    # Optionally create indexes here (example)
     try:
         await db.expenses.create_index("id", unique=True)
         await db.debts.create_index("id", unique=True)
@@ -179,7 +201,6 @@ async def create_expense(input: ExpenseCreate, current_user: dict = Depends(get_
 
     # store timestamp as datetime (UTC)
     doc = expense_obj.model_dump()
-    # ensure timestamp is a datetime object (not string)
     if isinstance(doc.get("timestamp"), str):
         doc["timestamp"] = datetime.fromisoformat(doc["timestamp"])
     await db.expenses.insert_one(doc)
@@ -190,24 +211,29 @@ async def get_expenses(
     filter: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    month: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    query = {
+    query: Dict[str, Any] = {
         "$or": [
             {"user_email": current_user["email"]},
             {"user_email": {"$exists": False}}
         ]
     }
-    # Date range filter (highest priority)
+    # 1. Custom Date range filter (highest priority)
     if from_date and to_date:
         query["date"] = {"$gte": from_date, "$lte": to_date}
 
-    elif filter:
-        now = datetime.now(timezone.utc)
+    # 2. Specific Month filter (YYYY-MM)
+    elif month:
+        query["date"] = {"$gte": f"{month}-01", "$lte": f"{month}-31"}
+
+    # 3. Quick filter
+    elif filter and filter != "all":
+        now = datetime.now(IST)
         if filter == "day":
-            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start_str = start_date.strftime("%Y-%m-%d")
-            query["date"] = {"$gte": start_str, "$lte": start_str}
+            today_str = now.strftime("%Y-%m-%d")
+            query["date"] = {"$gte": today_str, "$lte": today_str}
         elif filter == "week":
             start_date = now - timedelta(days=now.weekday())
             start_str = start_date.strftime("%Y-%m-%d")
@@ -216,17 +242,61 @@ async def get_expenses(
             start_date = now.replace(day=1)
             start_str = start_date.strftime("%Y-%m-%d")
             query["date"] = {"$gte": start_str}
+        elif filter == "last_month":
+            first_this_month = now.replace(day=1)
+            last_month_end = first_this_month - timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1)
+            query["date"] = {
+                "$gte": last_month_start.strftime("%Y-%m-%d"),
+                "$lte": last_month_end.strftime("%Y-%m-%d")
+            }
 
     docs = await db.expenses.find(query, {"_id": 0}).to_list(length=10000)
 
-    # Ensure timestamp fields are datetime objects (Motor normally returns datetimes)
     for d in docs:
         if isinstance(d.get("timestamp"), str):
             d["timestamp"] = datetime.fromisoformat(d["timestamp"])
 
-    # Sort by date descending
-    docs.sort(key=lambda x: x.get("date", ""), reverse=True)
+    docs.sort(key=lambda x: (x.get("date", ""), str(x.get("timestamp", ""))), reverse=True)
     return docs
+
+@api_router.get("/monthly-summary", response_model=List[MonthlyBreakdownItem])
+async def get_monthly_summary(current_user: dict = Depends(get_current_user)):
+    query = {
+        "$or": [
+            {"user_email": current_user["email"]},
+            {"user_email": {"$exists": False}}
+        ]
+    }
+    docs = await db.expenses.find(query, {"_id": 0}).to_list(length=10000)
+    monthly_map: Dict[str, Dict[str, Any]] = {}
+
+    for d in docs:
+        date_str = d.get("date", "")
+        if len(date_str) >= 7:
+            ym = date_str[:7]  # "YYYY-MM"
+            amt = float(d.get("amount", 0))
+            cat = d.get("category", "Other")
+            if ym not in monthly_map:
+                monthly_map[ym] = {"total": 0.0, "count": 0, "categories": {}}
+            monthly_map[ym]["total"] += amt
+            monthly_map[ym]["count"] += 1
+            monthly_map[ym]["categories"][cat] = monthly_map[ym]["categories"].get(cat, 0.0) + amt
+
+    result = []
+    for ym, data in sorted(monthly_map.items(), key=lambda x: x[0], reverse=True):
+        cats = data["categories"]
+        top_cat = max(cats.items(), key=lambda x: x[1])[0] if cats else "None"
+        result.append(
+            MonthlyBreakdownItem(
+                month=ym,
+                total=round(data["total"], 2),
+                count=data["count"],
+                top_category=top_cat,
+                categories={k: round(v, 2) for k, v in cats.items()}
+            )
+        )
+    return result
 
 @api_router.patch("/expenses/{expense_id}", response_model=Expense)
 async def update_expense(expense_id: str, input: ExpenseCreate, current_user: dict = Depends(get_current_user)):
@@ -240,7 +310,6 @@ async def update_expense(expense_id: str, input: ExpenseCreate, current_user: di
     expense_dict = input.model_dump()
     expense_dict["user_email"] = current_user["email"]
     
-    # Use pymongo ReturnDocument to get the updated document after update
     result = await db.expenses.find_one_and_update(
         {"id": expense_id},
         {"$set": expense_dict},
@@ -305,9 +374,13 @@ async def update_debt(debt_id: str, input: DebtUpdate, current_user: dict = Depe
     if debt.get("user_email") and debt.get("user_email") != current_user["email"]:
         raise HTTPException(status_code=403, detail="Not authorized to edit this debt")
 
+    update_fields = {k: v for k, v in input.model_dump().items() if v is not None}
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields provided for update")
+
     result = await db.debts.find_one_and_update(
         {"id": debt_id},
-        {"$set": {"status": input.status}},
+        {"$set": update_fields},
         return_document=ReturnDocument.AFTER
     )
     if not result:
@@ -346,18 +419,23 @@ async def get_limit(current_user: dict = Depends(get_current_user)):
     limit_id = f"limit_{current_user['email']}"
     limit = await db.limits.find_one({"id": limit_id}, {"_id": 0})
     if not limit:
-        # Check fallback legacy limit
         legacy_limit = await db.limits.find_one({"id": "limit_settings"}, {"_id": 0})
         if legacy_limit:
-            return Limit(id=limit_id, weekly_limit=legacy_limit.get("weekly_limit", 0), monthly_limit=legacy_limit.get("monthly_limit", 0))
-        return Limit(id=limit_id, weekly_limit=0, monthly_limit=0)
+            return Limit(
+                id=limit_id,
+                weekly_limit=legacy_limit.get("weekly_limit", 0),
+                monthly_limit=legacy_limit.get("monthly_limit", 0),
+                reminder_enabled=legacy_limit.get("reminder_enabled", True),
+                reminder_time=legacy_limit.get("reminder_time", "21:00"),
+            )
+        return Limit(id=limit_id, weekly_limit=0, monthly_limit=0, reminder_enabled=True, reminder_time="21:00")
     return limit
 
 
 # ---------- Summary Route ----------
 @api_router.get("/summary", response_model=Summary)
 async def get_summary(current_user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(IST)
 
     today_date = now.strftime("%Y-%m-%d")
     week_start = now - timedelta(days=now.weekday())
@@ -380,7 +458,6 @@ async def get_summary(current_user: dict = Depends(get_current_user)):
     limit_id = f"limit_{current_user['email']}"
     limit = await db.limits.find_one({"id": limit_id}, {"_id": 0})
     if not limit:
-        # Fallback to legacy limit settings
         limit = await db.limits.find_one({"id": "limit_settings"}, {"_id": 0})
 
     if not limit:
@@ -420,15 +497,15 @@ async def get_summary(current_user: dict = Depends(get_current_user)):
     money_owe = sum(d["amount"] for d in all_debts if d.get("debt_type") == "owe" and d.get("status") == "pending")
 
     return Summary(
-        total_today=total_today,
-        total_week=total_week,
-        total_month=total_month,
-        weekly_limit=weekly_limit,
-        monthly_limit=monthly_limit,
-        remaining_week=remaining_week,
-        remaining_month=remaining_month,
-        money_gave=money_gave,
-        money_owe=money_owe,
+        total_today=round(total_today, 2),
+        total_week=round(total_week, 2),
+        total_month=round(total_month, 2),
+        weekly_limit=round(weekly_limit, 2),
+        monthly_limit=round(monthly_limit, 2),
+        remaining_week=round(remaining_week, 2),
+        remaining_month=round(remaining_month, 2),
+        money_gave=round(money_gave, 2),
+        money_owe=round(money_owe, 2),
         weekly_warning=weekly_warning,
         monthly_warning=monthly_warning,
     )
