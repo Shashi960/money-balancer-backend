@@ -1,10 +1,12 @@
 # backend/server.py
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 import os
+import re
+import hashlib
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -509,6 +511,198 @@ async def get_summary(current_user: dict = Depends(get_current_user)):
         weekly_warning=weekly_warning,
         monthly_warning=monthly_warning,
     )
+
+
+# ---------- Bank / UPI SMS Auto-Parser & Webhook Routes ----------
+def make_user_sms_key(email: str) -> str:
+    return hashlib.sha256(f"{email.lower().strip()}_mb_sms_webhook_v1".encode()).hexdigest()[:16]
+
+
+def parse_indian_bank_sms(raw_text: str) -> Optional[Dict[str, Any]]:
+    if not raw_text or not raw_text.strip():
+        return None
+    text = raw_text.strip()
+    lower = text.lower()
+
+    # Ignore OTP-only messages unless debit is explicitly mentioned
+    if ("otp" in lower or "one time password" in lower or "verification code" in lower) and not any(
+        w in lower for w in ["debited", "spent", "paid", "deducted", "sent"]
+    ):
+        return None
+
+    # Check if debit/spend keywords exist
+    debit_keywords = [
+        "debited",
+        "spent",
+        "paid",
+        "sent",
+        "withdrawn",
+        "purchase",
+        "deducted",
+        "txn of",
+        "trf to",
+        "transferred",
+        "dr.",
+        "dr ",
+        "upi",
+    ]
+    is_credit_only = any(w in lower for w in ["credited", "received", "refund"]) and not any(
+        w in lower for w in ["debited", "spent", "paid", "sent", "dr"]
+    )
+    if is_credit_only:
+        return None
+
+    if not any(k in lower for k in debit_keywords):
+        return None
+
+    # Extract amount: Rs. 450.00, INR 1,250.50, ₹85, debited by 210.00
+    amount_patterns = [
+        r"(?:rs\.?|inr|₹|amt)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+        r"debited\s+(?:by|with|for)?\s*(?:rs\.?|inr|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+        r"spent\s+(?:rs\.?|inr|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+        r"paid\s+(?:rs\.?|inr|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    ]
+    amount = None
+    for pat in amount_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if val > 0:
+                    amount = round(val, 2)
+                    break
+            except ValueError:
+                pass
+
+    if not amount:
+        return None
+
+    # Extract merchant / payee
+    payee = None
+    payee_patterns = [
+        r"(?:to\s+vpa|to|at|towards|trf\s+to|paid\s+to|sent\s+to)\s+([A-Za-z0-9_.\-@ &]{2,35}?)(?:\s+on\b|\s+ref\b|\s+upi\b|\s+via\b|\s+avl\b|\s+bal\b|\.|\,|$)",
+        r"upi[\/\-][0-9]+[\/\-]([A-Za-z0-9_.\- ]{2,30}?)(?:[\/\-]|\.|\s|$)",
+        r"info\s*:\s*([A-Za-z0-9_.\-\/ ]{3,35}?)(?:\.|\,|$)",
+    ]
+    for pat in payee_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip(" .,-:/")
+            if candidate and not candidate.lower().startswith(("a/c", "ac ", "account", "xx", "card")):
+                if "@" in candidate:
+                    candidate = candidate.split("@")[0]
+                candidate = re.sub(r"\s+", " ", candidate).strip()
+                if len(candidate) >= 2:
+                    payee = candidate.title()
+                    break
+
+    if not payee:
+        payee = "Bank / UPI Debit"
+
+    # Auto-detect category
+    combined = f"{payee} {text}".lower()
+    category = "Other"
+    category_Keywords = {
+        "Food": ["swiggy", "zomato", "food", "restaurant", "cafe", "coffee", "tea", "bakery", "hotel", "domino", "kfc", "mcdonald", "blinkit", "zepto", "bigbasket", "eatsure", "tiffin", "mess", "canteen", "milk"],
+        "Travel": ["rapido", "uber", "ola", "irctc", "redbus", "bus", "metro", "bmtc", "petrol", "fuel", "hpcl", "bpcl", "iocl", "shell", "fastag", "toll", "auto", "cab", "train", "flight"],
+        "Shopping": ["amazon", "flipkart", "myntra", "ajio", "meesho", "dmart", "reliance", "zudio", "decathlon", "mall", "store", "mart", "supermarket", "grocer"],
+        "Bills": ["jio", "airtel", "vi ", "vodafone", "bsnl", "bescom", "electricity", "water", "gas", "broadband", "wifi", "recharge", "billdesk", "act fibernet", "tataplay", "bill"],
+        "Entertainment": ["netflix", "spotify", "hotstar", "prime", "bookmyshow", "pvr", "inox", "youtube", "movie", "game"],
+        "Healthcare": ["apollo", "medplus", "pharmacy", "hospital", "clinic", "doctor", "1mg", "pharmeasy", "medical", "health", "lab", "medicine"],
+        "Education": ["udemy", "coursera", "college", "school", "fees", "book", "course", "tuition", "exam"],
+    }
+    for cat, words in category_Keywords.items():
+        if any(w in combined for w in words):
+            category = cat
+            break
+
+    today_ist = datetime.now(IST).strftime("%Y-%m-%d")
+    return {
+        "id": str(uuid.uuid4()),
+        "title": payee,
+        "amount": amount,
+        "category": category,
+        "date": today_ist,
+        "raw_text": text[:500],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@api_router.get("/sms-webhook-info")
+async def get_sms_webhook_info(current_user: dict = Depends(get_current_user)):
+    key = make_user_sms_key(current_user["email"])
+    await db.users.update_one(
+        {"email": current_user["email"]},
+        {"$set": {"sms_webhook_key": key}},
+    )
+    return {
+        "webhook_key": key,
+        "user_email": current_user["email"],
+    }
+
+
+@api_router.api_route("/sms-webhook/{webhook_key}", methods=["GET", "POST"])
+async def receive_sms_webhook(
+    webhook_key: str,
+    request: Request,
+    text: Optional[str] = Query(None),
+    sender: Optional[str] = Query(None),
+):
+    # Find user by webhook_key or verify against default users
+    user = await db.users.find_one({"sms_webhook_key": webhook_key})
+    user_email = user["email"] if user else None
+
+    if not user_email:
+        all_users = await db.users.find({}, {"email": 1}).to_list(length=100)
+        for u in all_users:
+            if u.get("email") and make_user_sms_key(u["email"]) == webhook_key:
+                user_email = u["email"]
+                await db.users.update_one({"email": user_email}, {"$set": {"sms_webhook_key": webhook_key}})
+                break
+
+    if not user_email:
+        raise HTTPException(status_code=404, detail="Invalid SMS webhook key")
+
+    sms_text = text or ""
+    if not sms_text and request.method == "POST":
+        try:
+            body = await request.json()
+            sms_text = body.get("text") or body.get("message") or body.get("sms") or body.get("body") or ""
+        except Exception:
+            try:
+                raw_bytes = await request.body()
+                sms_text = raw_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                sms_text = ""
+
+    parsed = parse_indian_bank_sms(sms_text)
+    if not parsed:
+        return {"status": "ignored", "reason": "Not a recognized debit SMS or no amount found"}
+
+    parsed["user_email"] = user_email
+    parsed["sender"] = sender or "Bank SMS"
+    await db.pending_sms.insert_one(dict(parsed))
+    return {"status": "queued", "item": parsed}
+
+
+@api_router.get("/pending-sms")
+async def get_pending_sms(current_user: dict = Depends(get_current_user)):
+    query = {
+        "status": "pending",
+        "$or": [
+            {"user_email": current_user["email"]},
+            {"user_email": {"$exists": False}},
+        ],
+    }
+    items = await db.pending_sms.find(query, {"_id": 0}).sort("created_at", -1).to_list(length=100)
+    return items
+
+
+@api_router.delete("/pending-sms/{sms_id}")
+async def delete_pending_sms(sms_id: str, current_user: dict = Depends(get_current_user)):
+    await db.pending_sms.delete_one({"id": sms_id})
+    return {"message": "Pending SMS removed"}
 
 
 # include router and middleware
