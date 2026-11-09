@@ -75,16 +75,32 @@ class ExpenseCreate(BaseModel):
     payment_mode: Optional[str] = "UPI"
     notes: Optional[str] = ""
 
+class DebtPayment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    amount: float
+    date: str  # "YYYY-MM-DD"
+    notes: Optional[str] = ""
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class DebtPaymentCreate(BaseModel):
+    amount: float
+    date: str
+    notes: Optional[str] = ""
+
 class Debt(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     amount: float
+    original_amount: Optional[float] = None
     reason: str
     date: str
     status: str  # "pending" or "paid"
     debt_type: str  # "gave" or "owe"
+    payments: Optional[List[DebtPayment]] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     user_email: Optional[str] = None
 
@@ -100,9 +116,11 @@ class DebtUpdate(BaseModel):
     status: Optional[str] = None
     name: Optional[str] = None
     amount: Optional[float] = None
+    original_amount: Optional[float] = None
     reason: Optional[str] = None
     date: Optional[str] = None
     debt_type: Optional[str] = None
+    payments: Optional[List[DebtPayment]] = None
 
 class Limit(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -345,7 +363,51 @@ async def delete_expense(expense_id: str, current_user: dict = Depends(get_curre
 @api_router.post("/debts", response_model=Debt)
 async def create_debt(input: DebtCreate, current_user: dict = Depends(get_current_user)):
     debt_dict = input.model_dump()
-    debt_obj = Debt(**debt_dict, user_email=current_user["email"])
+    debt_obj = Debt(
+        **debt_dict,
+        original_amount=debt_dict.get("amount"),
+        payments=[],
+        user_email=current_user["email"]
+    )
+    doc = debt_obj.model_dump()
+    if isinstance(doc.get("timestamp"), str):
+        doc["timestamp"] = datetime.fromisoformat(doc["timestamp"])
+    await db.debts.insert_one(doc)
+    return debt_obj
+
+# ---------- Debt Helpers & Routes ----------
+async def find_debt_by_id_or_object_id(debt_id: str):
+    debt = await db.debts.find_one({"id": debt_id})
+    if debt:
+        return debt
+    debt = await db.debts.find_one({"_id": debt_id})
+    if debt:
+        return debt
+    try:
+        from bson import ObjectId
+        if ObjectId.is_valid(debt_id):
+            debt = await db.debts.find_one({"_id": ObjectId(debt_id)})
+            if debt:
+                return debt
+    except Exception:
+        pass
+    return None
+
+def check_debt_authorization(debt: dict, current_user: dict):
+    debt_user_email = (debt.get("user_email") or "").strip().lower()
+    current_email = (current_user.get("email") or "").strip().lower()
+    if debt_user_email and current_email and debt_user_email != current_email:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this debt")
+
+@api_router.post("/debts", response_model=Debt)
+async def create_debt(input: DebtCreate, current_user: dict = Depends(get_current_user)):
+    debt_dict = input.model_dump()
+    debt_obj = Debt(
+        **debt_dict,
+        original_amount=debt_dict.get("amount"),
+        payments=[],
+        user_email=current_user["email"]
+    )
     doc = debt_obj.model_dump()
     if isinstance(doc.get("timestamp"), str):
         doc["timestamp"] = datetime.fromisoformat(doc["timestamp"])
@@ -354,34 +416,74 @@ async def create_debt(input: DebtCreate, current_user: dict = Depends(get_curren
 
 @api_router.get("/debts", response_model=List[Debt])
 async def get_debts(current_user: dict = Depends(get_current_user)):
+    user_email = (current_user.get("email") or "").strip().lower()
     query = {
         "$or": [
-            {"user_email": current_user["email"]},
-            {"user_email": {"$exists": False}}
+            {"user_email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
+            {"user_email": {"$exists": False}},
+            {"user_email": None},
+            {"user_email": ""},
         ]
     }
-    docs = await db.debts.find(query, {"_id": 0}).to_list(length=10000)
+    docs = await db.debts.find(query).to_list(length=10000)
     for d in docs:
+        # Guarantee stable 'id' exists in document and in MongoDB
+        mongo_id = str(d.get("_id", ""))
+        if not d.get("id"):
+            d["id"] = mongo_id or str(uuid.uuid4())
+            if "_id" in d:
+                await db.debts.update_one({"_id": d["_id"]}, {"$set": {"id": d["id"]}})
+        d.pop("_id", None)
+
         if isinstance(d.get("timestamp"), str):
-            d["timestamp"] = datetime.fromisoformat(d["timestamp"])
+            try:
+                d["timestamp"] = datetime.fromisoformat(d["timestamp"])
+            except Exception:
+                d["timestamp"] = datetime.now(timezone.utc)
+        elif not isinstance(d.get("timestamp"), datetime):
+            d["timestamp"] = datetime.now(timezone.utc)
+
+        if "payments" not in d or d["payments"] is None:
+            d["payments"] = []
+        else:
+            for p in d["payments"]:
+                if isinstance(p.get("timestamp"), str):
+                    try:
+                        p["timestamp"] = datetime.fromisoformat(p["timestamp"])
+                    except Exception:
+                        p["timestamp"] = datetime.now(timezone.utc)
+                elif not isinstance(p.get("timestamp"), datetime):
+                    p["timestamp"] = datetime.now(timezone.utc)
+
+        if "original_amount" not in d or d["original_amount"] is None:
+            total_paid = sum(float(p.get("amount", 0)) for p in d["payments"])
+            d["original_amount"] = round(float(d.get("amount", 0)) + total_paid, 2)
+
     docs.sort(key=lambda x: x.get("date", ""), reverse=True)
     return docs
 
 @api_router.patch("/debts/{debt_id}", response_model=Debt)
 async def update_debt(debt_id: str, input: DebtUpdate, current_user: dict = Depends(get_current_user)):
-    debt = await db.debts.find_one({"id": debt_id})
+    debt = await find_debt_by_id_or_object_id(debt_id)
     if not debt:
         raise HTTPException(status_code=404, detail="Debt not found")
     
-    if debt.get("user_email") and debt.get("user_email") != current_user["email"]:
-        raise HTTPException(status_code=403, detail="Not authorized to edit this debt")
+    check_debt_authorization(debt, current_user)
 
     update_fields = {k: v for k, v in input.model_dump().items() if v is not None}
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields provided for update")
 
+    # If debt was missing user_email, claim ownership for current user
+    if not debt.get("user_email"):
+        update_fields["user_email"] = current_user["email"]
+
+    # Guarantee id is preserved
+    if not debt.get("id"):
+        update_fields["id"] = debt_id
+
     result = await db.debts.find_one_and_update(
-        {"id": debt_id},
+        {"_id": debt["_id"]},
         {"$set": update_fields},
         return_document=ReturnDocument.AFTER
     )
@@ -389,19 +491,169 @@ async def update_debt(debt_id: str, input: DebtUpdate, current_user: dict = Depe
         raise HTTPException(status_code=404, detail="Debt not found")
     result.pop("_id", None)
     if isinstance(result.get("timestamp"), str):
-        result["timestamp"] = datetime.fromisoformat(result["timestamp"])
+        try:
+            result["timestamp"] = datetime.fromisoformat(result["timestamp"])
+        except Exception:
+            result["timestamp"] = datetime.now(timezone.utc)
+    elif not isinstance(result.get("timestamp"), datetime):
+        result["timestamp"] = datetime.now(timezone.utc)
+
+    if "payments" not in result or result["payments"] is None:
+        result["payments"] = []
+    else:
+        for p in result["payments"]:
+            if isinstance(p.get("timestamp"), str):
+                try:
+                    p["timestamp"] = datetime.fromisoformat(p["timestamp"])
+                except Exception:
+                    p["timestamp"] = datetime.now(timezone.utc)
+            elif not isinstance(p.get("timestamp"), datetime):
+                p["timestamp"] = datetime.now(timezone.utc)
+
+    if "original_amount" not in result or result["original_amount"] is None:
+        total_paid = sum(float(p.get("amount", 0)) for p in result["payments"])
+        result["original_amount"] = round(float(result.get("amount", 0)) + total_paid, 2)
+    return result
+
+@api_router.post("/debts/{debt_id}/payments", response_model=Debt)
+async def add_debt_payment(
+    debt_id: str,
+    input: DebtPaymentCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    debt = await find_debt_by_id_or_object_id(debt_id)
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    
+    check_debt_authorization(debt, current_user)
+
+    pay_amount = round(float(input.amount), 2)
+    if pay_amount <= 0:
+        raise HTTPException(status_code=400, detail="Payment amount must be greater than 0")
+
+    existing_payments = debt.get("payments") or []
+    original_amount = debt.get("original_amount")
+    if original_amount is None:
+        total_paid = sum(float(p.get("amount", 0)) for p in existing_payments)
+        original_amount = round(float(debt.get("amount", 0)) + total_paid, 2)
+
+    current_balance = float(debt.get("amount", 0))
+    new_balance = round(max(0.0, current_balance - pay_amount), 2)
+    new_status = "paid" if new_balance <= 0 else "pending"
+
+    new_payment = DebtPayment(
+        id=str(uuid.uuid4()),
+        amount=pay_amount,
+        date=input.date,
+        notes=input.notes.strip() if input.notes else "",
+        timestamp=datetime.now(timezone.utc)
+    )
+    payment_doc = new_payment.model_dump()
+    if isinstance(payment_doc.get("timestamp"), str):
+        payment_doc["timestamp"] = datetime.fromisoformat(payment_doc["timestamp"])
+
+    set_fields = {
+        "amount": new_balance,
+        "status": new_status,
+        "original_amount": original_amount,
+    }
+    if not debt.get("user_email"):
+        set_fields["user_email"] = current_user["email"]
+    if not debt.get("id"):
+        set_fields["id"] = debt_id
+
+    result = await db.debts.find_one_and_update(
+        {"_id": debt["_id"]},
+        {
+            "$set": set_fields,
+            "$push": {"payments": payment_doc}
+        },
+        return_document=ReturnDocument.AFTER
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    result.pop("_id", None)
+    if isinstance(result.get("timestamp"), str):
+        try:
+            result["timestamp"] = datetime.fromisoformat(result["timestamp"])
+        except Exception:
+            result["timestamp"] = datetime.now(timezone.utc)
+    elif not isinstance(result.get("timestamp"), datetime):
+        result["timestamp"] = datetime.now(timezone.utc)
+
+    for p in result.get("payments", []):
+        if isinstance(p.get("timestamp"), str):
+            try:
+                p["timestamp"] = datetime.fromisoformat(p["timestamp"])
+            except Exception:
+                p["timestamp"] = datetime.now(timezone.utc)
+        elif not isinstance(p.get("timestamp"), datetime):
+            p["timestamp"] = datetime.now(timezone.utc)
+    return result
+
+@api_router.delete("/debts/{debt_id}/payments/{payment_id}", response_model=Debt)
+async def delete_debt_payment(
+    debt_id: str,
+    payment_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    debt = await find_debt_by_id_or_object_id(debt_id)
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    
+    check_debt_authorization(debt, current_user)
+
+    payments = debt.get("payments") or []
+    target_payment = next((p for p in payments if p.get("id") == payment_id), None)
+    if not target_payment:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+
+    revert_amount = float(target_payment.get("amount", 0))
+    current_balance = float(debt.get("amount", 0))
+    new_balance = round(current_balance + revert_amount, 2)
+    new_status = "paid" if new_balance <= 0 else "pending"
+
+    result = await db.debts.find_one_and_update(
+        {"_id": debt["_id"]},
+        {
+            "$set": {
+                "amount": new_balance,
+                "status": new_status,
+            },
+            "$pull": {"payments": {"id": payment_id}}
+        },
+        return_document=ReturnDocument.AFTER
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    result.pop("_id", None)
+    if isinstance(result.get("timestamp"), str):
+        try:
+            result["timestamp"] = datetime.fromisoformat(result["timestamp"])
+        except Exception:
+            result["timestamp"] = datetime.now(timezone.utc)
+    elif not isinstance(result.get("timestamp"), datetime):
+        result["timestamp"] = datetime.now(timezone.utc)
+
+    for p in result.get("payments", []):
+        if isinstance(p.get("timestamp"), str):
+            try:
+                p["timestamp"] = datetime.fromisoformat(p["timestamp"])
+            except Exception:
+                p["timestamp"] = datetime.now(timezone.utc)
+        elif not isinstance(p.get("timestamp"), datetime):
+            p["timestamp"] = datetime.now(timezone.utc)
     return result
 
 @api_router.delete("/debts/{debt_id}")
 async def delete_debt(debt_id: str, current_user: dict = Depends(get_current_user)):
-    debt = await db.debts.find_one({"id": debt_id})
+    debt = await find_debt_by_id_or_object_id(debt_id)
     if not debt:
         raise HTTPException(status_code=404, detail="Debt not found")
     
-    if debt.get("user_email") and debt.get("user_email") != current_user["email"]:
-        raise HTTPException(status_code=403, detail="Not authorized to delete this debt")
+    check_debt_authorization(debt, current_user)
 
-    result = await db.debts.delete_one({"id": debt_id})
+    result = await db.debts.delete_one({"_id": debt["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Debt not found")
     return {"message": "Debt deleted successfully"}

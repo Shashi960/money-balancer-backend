@@ -127,6 +127,27 @@ class MoneyBalancerAPITester:
         )
         return success, response
 
+    def test_add_debt_payment(self, debt_id, amount, date, notes=""):
+        """Test adding a partial repayment to debt"""
+        success, response = self.run_test(
+            f"Add Payment {amount} to Debt {debt_id[:8]}",
+            "POST",
+            f"debts/{debt_id}/payments",
+            200,
+            data={"amount": amount, "date": date, "notes": notes}
+        )
+        return success, response
+
+    def test_delete_debt_payment(self, debt_id, payment_id):
+        """Test deleting a payment from debt"""
+        success, response = self.run_test(
+            f"Delete Payment {payment_id[:8]} from Debt {debt_id[:8]}",
+            "DELETE",
+            f"debts/{debt_id}/payments/{payment_id}",
+            200
+        )
+        return success, response
+
     def test_delete_debt(self, debt_id):
         """Test deleting a debt"""
         success, _ = self.run_test(
@@ -218,13 +239,28 @@ def main():
     if success:
         print(f"   Total debts retrieved: {len(all_debts)}")
     
-    # Test 4: Update Debt Status
+    # Test 4: Update Debt Status & Partial Repayments
     if debt1_id:
         success, updated_debt = tester.test_update_debt_status(debt1_id, "paid")
         if success and updated_debt.get('status') == 'paid':
             print("   ✅ Debt status updated correctly")
         else:
             print("   ❌ Debt status not updated correctly")
+
+    if debt2_id:
+        # Partial payment test: owes 50, pays 20 -> remaining should be 30
+        success, pay_res = tester.test_add_debt_payment(debt2_id, 20.00, today, "Partial return")
+        if success and pay_res.get('amount') == 30.00 and len(pay_res.get('payments', [])) == 1:
+            print("   ✅ Partial repayment deducted correctly (Remaining: 30.00)")
+            payment_id = pay_res['payments'][0]['id']
+            # Delete payment test -> remaining should be back to 50
+            del_success, del_res = tester.test_delete_debt_payment(debt2_id, payment_id)
+            if del_success and del_res.get('amount') == 50.00 and len(del_res.get('payments', [])) == 0:
+                print("   ✅ Repayment reverted correctly (Remaining: 50.00)")
+            else:
+                print("   ❌ Repayment revert failed")
+        else:
+            print("   ❌ Partial repayment deduction failed")
     
     # Test 5: Spending Limits
     print("\n" + "=" * 60)
