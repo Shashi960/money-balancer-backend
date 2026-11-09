@@ -85,6 +85,19 @@ class Debt(BaseModel):
     date: str
     status: str  # "pending" or "paid"
     debt_type: str  # "gave" or "owe"
+    original_amount: Optional[float] = None  # store the initial amount
+    payments: List[Dict[str, Any]] = []  # each payment will be a dict with amount, date, notes, id
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    user_email: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    amount: float
+    reason: str
+    date: str
+    status: str  # "pending" or "paid"
+    debt_type: str  # "gave" or "owe"
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     user_email: Optional[str] = None
 
@@ -342,8 +355,50 @@ async def delete_expense(expense_id: str, current_user: dict = Depends(get_curre
 
 
 # ---------- Debt Routes ----------
+
+# Helper to find debt by our public id or MongoDB _id
+async def find_debt(debt_id: str):
+    # Try by public id first
+    debt = await db.debts.find_one({"id": debt_id})
+    if debt:
+        return debt
+    # Fallback to ObjectId lookup
+    try:
+        from bson import ObjectId
+        debt = await db.debts.find_one({"_id": ObjectId(debt_id)})
+        return debt
+    except Exception:
+        return None
+
+# Helper to ensure debt belongs to current user
+def authorize_debt(debt: dict, current_user: dict):
+    if debt.get("user_email") and debt.get("user_email") != current_user["email"]:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this debt")
+
+# Model for a payment record
+class DebtPayment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    amount: float
+    date: str
+    notes: Optional[str] = ""
+
+class DebtPaymentCreate(BaseModel):
+    amount: float
+    date: str
+    notes: Optional[str] = ""
+
 @api_router.post("/debts", response_model=Debt)
 async def create_debt(input: DebtCreate, current_user: dict = Depends(get_current_user)):
+    debt_dict = input.model_dump()
+    # Set original amount and empty payments list
+    debt_dict["original_amount"] = debt_dict["amount"]
+    debt_dict["payments"] = []
+    debt_obj = Debt(**debt_dict, user_email=current_user["email"])
+    doc = debt_obj.model_dump()
+    if isinstance(doc.get("timestamp"), str):
+        doc["timestamp"] = datetime.fromisoformat(doc["timestamp"])
+    await db.debts.insert_one(doc)
+    return debt_obj
     debt_dict = input.model_dump()
     debt_obj = Debt(**debt_dict, user_email=current_user["email"])
     doc = debt_obj.model_dump()
@@ -368,6 +423,27 @@ async def get_debts(current_user: dict = Depends(get_current_user)):
     return docs
 
 @api_router.patch("/debts/{debt_id}", response_model=Debt)
+async def update_debt(debt_id: str, input: DebtUpdate, current_user: dict = Depends(get_current_user)):
+    debt = await find_debt(debt_id)
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    authorize_debt(debt, current_user)
+
+    update_fields = {k: v for k, v in input.model_dump().items() if v is not None}
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields provided for update")
+
+    result = await db.debts.find_one_and_update(
+        {"_id": debt["_id"]},
+        {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    result.pop("_id", None)
+    if isinstance(result.get("timestamp"), str):
+        result["timestamp"] = datetime.fromisoformat(result["timestamp"]) 
+    return result
 async def update_debt(debt_id: str, input: DebtUpdate, current_user: dict = Depends(get_current_user)):
     debt = await db.debts.find_one({"id": debt_id})
     if not debt:
@@ -407,7 +483,72 @@ async def delete_debt(debt_id: str, current_user: dict = Depends(get_current_use
     return {"message": "Debt deleted successfully"}
 
 
-# ---------- Limit Routes ----------
+@api_router.post("/debts/{debt_id}/payments", response_model=Debt)
+async def add_payment(debt_id: str, payment: DebtPaymentCreate, current_user: dict = Depends(get_current_user)):
+    debt = await find_debt(debt_id)
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    authorize_debt(debt, current_user)
+
+    # Create payment record with unique id
+    payment_record = {
+        "id": str(uuid.uuid4()),
+        "amount": payment.amount,
+        "date": payment.date,
+        "notes": payment.notes or "",
+    }
+
+    # Update payments list and remaining amount
+    payments = debt.get("payments", [])
+    payments.append(payment_record)
+    new_amount = max(0, debt.get("amount", 0) - payment.amount)
+    update_fields = {
+        "payments": payments,
+        "amount": new_amount,
+    }
+    if new_amount == 0:
+        update_fields["status"] = "paid"
+    result = await db.debts.find_one_and_update(
+        {"_id": debt["_id"]},
+        {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Debt not found after payment")
+    result.pop("_id", None)
+    if isinstance(result.get("timestamp"), str):
+        result["timestamp"] = datetime.fromisoformat(result["timestamp"])
+    return result
+
+@api_router.delete("/debts/{debt_id}/payments/{payment_id}", response_model=Debt)
+async def delete_payment(debt_id: str, payment_id: str, current_user: dict = Depends(get_current_user)):
+    debt = await find_debt(debt_id)
+    if not debt:
+        raise HTTPException(status_code=404, detail="Debt not found")
+    authorize_debt(debt, current_user)
+    payments = debt.get("payments", [])
+    payment_to_remove = next((p for p in payments if p.get("id") == payment_id), None)
+    if not payment_to_remove:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    payments = [p for p in payments if p.get("id") != payment_id]
+    # Restore amount
+    restored_amount = debt.get("amount", 0) + payment_to_remove.get("amount", 0)
+    update_fields = {
+        "payments": payments,
+        "amount": restored_amount,
+        "status": "pending",
+    }
+    result = await db.debts.find_one_and_update(
+        {"_id": debt["_id"]},
+        {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Debt not found after payment delete")
+    result.pop("_id", None)
+    if isinstance(result.get("timestamp"), str):
+        result["timestamp"] = datetime.fromisoformat(result["timestamp"])
+    return result
 @api_router.post("/limit", response_model=Limit)
 async def create_or_update_limit(input: LimitCreate, current_user: dict = Depends(get_current_user)):
     limit_id = f"limit_{current_user['email']}"
